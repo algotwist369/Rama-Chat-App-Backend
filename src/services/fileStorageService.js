@@ -1,0 +1,69 @@
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, '../../uploads');
+const chatFilesDir = path.join(uploadsDir, 'chat-files');
+
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+if (!fs.existsSync(chatFilesDir)) {
+    fs.mkdirSync(chatFilesDir, { recursive: true });
+}
+
+// Configure multer for local storage
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, chatFilesDir);
+    },
+    filename: (req, file, cb) => {
+        const fileName = `${Date.now()}-${file.originalname}`;
+        cb(null, fileName);
+    }
+});
+
+const uploadToLocal = multer({
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|mp4|avi|mkv/;
+        const extname = allowedTypes.test(file.originalname.toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype);
+
+        if (extname && mimetype) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Invalid file type'));
+        }
+    }
+});
+
+const deleteFromLocal = async (filename) => {
+    try {
+        const filePath = path.join(chatFilesDir, filename);
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`File deleted: ${filename}`);
+        } else {
+            console.log(`File not found: ${filename}`);
+        }
+    } catch (error) {
+        console.error('Error deleting file:', error);
+    }
+};
+
+const getFileUrl = (filename) => {
+    const baseUrl = process.env.API_URL || 'http://localhost:5000';
+    return `${baseUrl}/uploads/chat-files/${filename}`;
+};
+
+module.exports = { 
+    uploadToLocal, 
+    deleteFromLocal, 
+    getFileUrl,
+    uploadsDir,
+    chatFilesDir
+};
