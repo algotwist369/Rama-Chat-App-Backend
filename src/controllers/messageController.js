@@ -1,7 +1,7 @@
 const Message = require('../models/Message');
 const Group = require('../models/Group');
 const User = require('../models/User');
-const { extractTags } = require('../utils/parser');
+const extractTags = require('../utils/parser');
 
 // Auto-delete permanently deleted messages after 24 hours
 const cleanupDeletedMessages = async () => {
@@ -23,6 +23,67 @@ const cleanupDeletedMessages = async () => {
 
 // Run cleanup every hour
 setInterval(cleanupDeletedMessages, 60 * 60 * 1000);
+
+/**
+ * Send a new message
+ */
+const sendMessage = async (req, res) => {
+    try {
+        const { text, groupId, file } = req.body;
+        const userId = req.user._id;
+
+        // Validate required fields
+        if (!text && !file) {
+            return res.status(400).json({ error: 'Message text or file is required' });
+        }
+
+        if (!groupId) {
+            return res.status(400).json({ error: 'Group ID is required' });
+        }
+
+        // Verify user is member of the group
+        const group = await Group.findById(groupId);
+        if (!group) {
+            return res.status(404).json({ error: 'Group not found' });
+        }
+
+        const isMember = group.users.some(user => user.toString() === userId.toString()) ||
+                        group.managers.some(manager => manager.toString() === userId.toString());
+
+        if (!isMember) {
+            return res.status(403).json({ error: 'You are not a member of this group' });
+        }
+
+        // Create the message
+        const message = await Message.create({
+            senderId: userId,
+            groupId: groupId,
+            text: text || '',
+            file: file || null,
+            tags: extractTags(text || '')
+        });
+
+        // Populate the message with sender and group information
+        const populatedMessage = await Message.findById(message._id)
+            .populate('senderId', 'username email')
+            .populate('groupId', 'name region')
+            .lean();
+
+        // Emit to the group via socket
+        const io = req.app.get('io');
+        if (io) {
+            io.to(`group:${groupId}`).emit('message:new', populatedMessage);
+        }
+
+        res.status(201).json({
+            message: 'Message sent successfully',
+            data: populatedMessage
+        });
+    } catch (error) {
+        console.error('Send message error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
 
 /**
  * Get messages from a group with pagination
@@ -95,7 +156,13 @@ const editMessage = async (req, res) => {
             );
         }
 
-        req.app.get('io')?.to(`group:${message.groupId}`).emit('message:edited', message);
+        // Populate the message with sender and group information before emitting
+        const populatedMessage = await Message.findById(message._id)
+            .populate('senderId', 'username email')
+            .populate('groupId', 'name region')
+            .lean();
+
+        req.app.get('io')?.to(`group:${message.groupId}`).emit('message:edited', populatedMessage);
 
         res.json({ message: 'Message updated successfully', message });
     } catch (error) {
@@ -288,6 +355,7 @@ const markAsSeen = async (req, res) => {
 };
 
 module.exports = {
+    sendMessage,
     getMessages,
     editMessage,
     deleteMessage,

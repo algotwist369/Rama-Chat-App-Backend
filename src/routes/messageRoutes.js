@@ -1,5 +1,6 @@
 const express = require('express');
 const {
+    sendMessage,
     getMessages,
     editMessage,
     deleteMessage,
@@ -14,6 +15,7 @@ const router = express.Router();
 
 router.use(auth);
 
+router.post('/', sendMessage);
 router.get('/search', searchMessages);
 router.get('/:groupId', getMessages);
 router.put('/:messageId', editMessage);
