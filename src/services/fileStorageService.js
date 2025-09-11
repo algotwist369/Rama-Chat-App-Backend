@@ -29,14 +29,24 @@ const uploadToLocal = multer({
     storage: storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
     fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|mp4|avi|mkv/;
-        const extname = allowedTypes.test(file.originalname.toLowerCase());
-        const mimetype = allowedTypes.test(file.mimetype);
+        // Allowed file extensions
+        const allowedExtensions = /\.(jpeg|jpg|png|gif|pdf|doc|docx|txt|mp4|avi|mkv)$/i;
+        // Allowed MIME types
+        const allowedMimeTypes = /^(image\/(jpeg|jpg|png|gif)|application\/(pdf|msword|vnd\.openxmlformats-officedocument\.wordprocessingml\.document|text\/plain)|video\/(mp4|avi|mkv))$/;
+        
+        const extname = allowedExtensions.test(file.originalname);
+        const mimetype = allowedMimeTypes.test(file.mimetype);
 
         if (extname && mimetype) {
             return cb(null, true);
         } else {
-            cb(new Error('Invalid file type'));
+            console.log('File rejected:', {
+                originalname: file.originalname,
+                mimetype: file.mimetype,
+                extname: extname,
+                mimetypeMatch: mimetype
+            });
+            cb(new Error('Invalid file type. Allowed types: images (jpeg, jpg, png, gif), documents (pdf, doc, docx, txt), videos (mp4, avi, mkv)'));
         }
     }
 });
@@ -56,7 +66,7 @@ const deleteFromLocal = async (filename) => {
 };
 
 const getFileUrl = (filename) => {
-    const baseUrl = process.env.API_URL || 'http://localhost:5000';
+    const baseUrl = process.env.API_URL || 'https://chat.api.d0s369.co.in' || 'http://localhost:5000';
     return `${baseUrl}/uploads/chat-files/${filename}`;
 };
 

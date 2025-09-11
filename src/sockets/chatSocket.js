@@ -5,22 +5,45 @@ const Group = require('../models/Group');
 const extractTags = require('../utils/parser');
 const User = require('../models/User');
 const { sendNotification } = require('../services/notificationService');
+require('dotenv').config();
 
 function initSocket(server, redisAdapter, app) {
-  const io = new Server(server, { cors: { origin: process.env.FRONTEND_URL } });
+  const io = new Server(server, { 
+    cors: { 
+      origin: ['https://rama.ciphra.in', 'http://localhost:5173'],
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+    } 
+  });
   if (redisAdapter) io.adapter(redisAdapter);
-  
+
   // Attach io instance to the app so controllers can access it
   app.set('io', io);
 
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error('unauth'));
+    console.log('Socket authentication attempt:', {
+      hasToken: !!token,
+      tokenLength: token?.length,
+      socketId: socket.id
+    });
+
+    if (!token) {
+      console.log('Socket authentication failed: No token provided');
+      return next(new Error('unauth'));
+    }
+
     try {
       const payload = verify(token);
+      console.log('Socket authentication successful:', {
+        userId: payload.sub,
+        role: payload.role,
+        socketId: socket.id
+      });
       socket.userId = payload.sub;
       next();
     } catch (e) {
+      console.log('Socket authentication failed: Token verification error:', e.message);
       next(new Error('unauth'));
     }
   });
@@ -31,14 +54,14 @@ function initSocket(server, redisAdapter, app) {
     if (!user) return socket.disconnect();
 
     // Update user online status
-    await User.findByIdAndUpdate(socket.userId, { 
+    await User.findByIdAndUpdate(socket.userId, {
       isOnline: true,
       lastSeen: new Date()
     });
 
     socket.join(`user:${user._id}`);
     if (user.groupId) socket.join(`group:${user.groupId.toString()}`);
-    
+
     // Join admin room if user is admin
     if (user.role === 'admin') {
       socket.join('admin:room');
@@ -88,7 +111,7 @@ function initSocket(server, redisAdapter, app) {
     // Test endpoint for manual online status trigger
     socket.on('test:online-status', () => {
       console.log(`Testing online status for user ${user.username}`);
-      
+
       // Emit to group members
       if (user.groupId) {
         socket.to(`group:${user.groupId.toString()}`).emit('user:online', {
@@ -98,7 +121,7 @@ function initSocket(server, redisAdapter, app) {
           test: true
         });
       }
-      
+
       // Emit to admins
       socket.to('admin:room').emit('user:online', {
         userId: socket.userId,
@@ -113,11 +136,11 @@ function initSocket(server, redisAdapter, app) {
       console.log(`User ${user.username} (${socket.userId}) joining group: ${groupId}`);
       socket.join(`group:${groupId}`);
       console.log(`Socket joined room: group:${groupId}`);
-      
+
       // Emit user joined event to group members (excluding the user who joined)
-      socket.to(`group:${groupId}`).emit('user:joined', { 
-        userId: socket.userId, 
-        username: user.username 
+      socket.to(`group:${groupId}`).emit('user:joined', {
+        userId: socket.userId,
+        username: user.username
       });
 
       // Send notification to group members (stored in database, not real-time)
@@ -145,9 +168,9 @@ function initSocket(server, redisAdapter, app) {
 
     socket.on('group:leave', async ({ groupId }) => {
       socket.leave(`group:${groupId}`);
-      socket.to(`group:${groupId}`).emit('user:left', { 
-        userId: socket.userId, 
-        username: user.username 
+      socket.to(`group:${groupId}`).emit('user:left', {
+        userId: socket.userId,
+        username: user.username
       });
 
       // Send notification to group members (stored in database, not real-time)
@@ -176,10 +199,10 @@ function initSocket(server, redisAdapter, app) {
     socket.on('message:send', async (payload, ack) => {
       const { text, file, groupId, targetGroups } = payload;
       const tags = extractTags(text);
-      
+
       // Use the groupId from payload or user's default group
       const targetGroupId = groupId || user.groupId;
-      
+
       // Only forward to explicitly mentioned groups or if targetGroups is specified
       let forwardedGroups = [];
       if (targetGroups && targetGroups.length > 0) {
@@ -208,7 +231,7 @@ function initSocket(server, redisAdapter, app) {
 
       // Emit to the target group
       io.to(`group:${targetGroupId}`).emit('message:new', populatedMsg);
-      
+
       // Create separate message records for each forwarded group to ensure persistence
       const forwardedMessages = [];
       for (const group of forwardedGroups) {
@@ -297,8 +320,8 @@ function initSocket(server, redisAdapter, app) {
     socket.on('typing:start', ({ groupId }) => {
       console.log(`User ${user.username} started typing in group: ${groupId}`);
       // Verify user is actually in this group before showing typing indicator
-      socket.to(`group:${groupId}`).emit('typing:start', { 
-        userId: socket.userId, 
+      socket.to(`group:${groupId}`).emit('typing:start', {
+        userId: socket.userId,
         username: user.username,
         groupId: groupId
       });
@@ -306,7 +329,7 @@ function initSocket(server, redisAdapter, app) {
     socket.on('typing:stop', ({ groupId }) => {
       console.log(`User ${user.username} stopped typing in group: ${groupId}`);
       // Verify user is actually in this group before stopping typing indicator
-      socket.to(`group:${groupId}`).emit('typing:stop', { 
+      socket.to(`group:${groupId}`).emit('typing:stop', {
         userId: socket.userId,
         username: user.username,
         groupId: groupId
@@ -315,7 +338,7 @@ function initSocket(server, redisAdapter, app) {
 
     socket.on('disconnect', async () => {
       // Update user offline status and last seen
-      await User.findByIdAndUpdate(socket.userId, { 
+      await User.findByIdAndUpdate(socket.userId, {
         isOnline: false,
         lastSeen: new Date()
       });
