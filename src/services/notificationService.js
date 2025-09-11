@@ -1,4 +1,4 @@
-const redis = require('../config/redis');
+const { getRedisClient } = require('../config/redis');
 const User = require('../models/User');
 
 const sendNotification = async (userId, notification) => {
@@ -7,7 +7,8 @@ const sendNotification = async (userId, notification) => {
             $push: { notifications: notification }
         });
 
-        const userNotifications = await redis.get(`notifications:${userId}`);
+        const redis = getRedisClient();
+        const userNotifications = redis ? await redis.get(`notifications:${userId}`) : null;
         const notifications = userNotifications ? JSON.parse(userNotifications) : [];
         notifications.push(notification);
 
@@ -15,7 +16,9 @@ const sendNotification = async (userId, notification) => {
             notifications.splice(0, notifications.length - 100);
         }
 
-        await redis.setex(`notifications:${userId}`, 24 * 60 * 60, JSON.stringify(notifications));
+        if (redis) {
+            await redis.setEx(`notifications:${userId}`, 24 * 60 * 60, JSON.stringify(notifications));
+        }
         return true;
     } catch (error) {
         console.error('Error sending notification:', error);
@@ -26,7 +29,8 @@ const sendNotification = async (userId, notification) => {
 const getNotifications = async (userId) => {
     try {
         // First try to get from Redis
-        const redisNotifications = await redis.get(`notifications:${userId}`);
+        const redis = getRedisClient();
+        const redisNotifications = redis ? await redis.get(`notifications:${userId}`) : null;
         if (redisNotifications) {
             return JSON.parse(redisNotifications);
         }
@@ -35,7 +39,10 @@ const getNotifications = async (userId) => {
         const user = await User.findById(userId).select('notifications');
         if (user && user.notifications) {
             // Store in Redis for future requests
-            await redis.setex(`notifications:${userId}`, 24 * 60 * 60, JSON.stringify(user.notifications));
+            const redis = getRedisClient();
+            if (redis) {
+                await redis.setEx(`notifications:${userId}`, 24 * 60 * 60, JSON.stringify(user.notifications));
+            }
             return user.notifications;
         }
 
@@ -49,7 +56,10 @@ const getNotifications = async (userId) => {
 const markNotificationsAsSeen = async (userId) => {
     try {
         // Clear notifications from Redis and MongoDB
-        await redis.del(`notifications:${userId}`);
+        const redis = getRedisClient();
+        if (redis) {
+            await redis.del(`notifications:${userId}`);
+        }
         await User.findByIdAndUpdate(userId, { $set: { notifications: [] } });
         return true;
     } catch (error) {
@@ -60,7 +70,10 @@ const markNotificationsAsSeen = async (userId) => {
 
 const clearNotifications = async (userId) => {
     try {
-        await redis.del(`notifications:${userId}`);
+        const redis = getRedisClient();
+        if (redis) {
+            await redis.del(`notifications:${userId}`);
+        }
         await User.findByIdAndUpdate(userId, { $set: { notifications: [] } });
         return true;
     } catch (error) {

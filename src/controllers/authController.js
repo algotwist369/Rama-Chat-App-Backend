@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const { signAccess } = require('../utils/token');
-const redis = require('../config/redis');
+const { getRedisClient } = require('../config/redis');
 
 const getUsers = async (req, res) => {
     try {
@@ -84,7 +84,10 @@ const login = async (req, res) => {
 
         // Store refresh token in Redis (optional)
         const refreshToken = `refresh_${user._id}_${Date.now()}`;
-        await redis.setex(refreshToken, 7 * 24 * 60 * 60, user._id.toString());
+        const redis = getRedisClient();
+        if (redis) {
+            await redis.setEx(refreshToken, 7 * 24 * 60 * 60, user._id.toString());
+        }
 
         res.json({
             token,
@@ -107,7 +110,8 @@ const refreshToken = async (req, res) => {
     try {
         const { refreshToken } = req.body;
 
-        const userId = await redis.get(refreshToken);
+        const redis = getRedisClient();
+        const userId = redis ? await redis.get(refreshToken) : null;
         if (!userId) {
             return res.status(401).json({ error: 'Invalid refresh token' });
         }
@@ -136,8 +140,8 @@ const logout = async (req, res) => {
         });
 
         // Remove all refresh tokens for this user (optional cleanup)
-        const keys = await redis.keys(`refresh_${userId}_*`);
-        if (keys.length > 0) {
+        const keys = redis ? await redis.keys(`refresh_${userId}_*`) : [];
+        if (keys.length > 0 && redis) {
             await redis.del(...keys);
         }
 
@@ -240,7 +244,10 @@ const loginWithPin = async (req, res) => {
 
         // Store refresh token in Redis (optional)
         const refreshToken = `refresh_${user._id}_${Date.now()}`;
-        await redis.setex(refreshToken, 7 * 24 * 60 * 60, user._id.toString());
+        const redis = getRedisClient();
+        if (redis) {
+            await redis.setEx(refreshToken, 7 * 24 * 60 * 60, user._id.toString());
+        }
 
         res.json({
             token,

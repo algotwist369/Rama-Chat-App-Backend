@@ -1,4 +1,5 @@
 const { Server } = require('socket.io');
+const { createAdapter } = require('@socket.io/redis-adapter');
 const { verify } = require('../utils/token');
 const Message = require('../models/Message');
 const Group = require('../models/Group');
@@ -29,7 +30,11 @@ function initSocket(server, redisAdapter, app) {
     pingInterval: parseInt(process.env.SOCKET_PING_INTERVAL) || 25000,
     maxHttpBufferSize: parseInt(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE) || 1000000
   });
-  if (redisAdapter) io.adapter(redisAdapter);
+  if (redisAdapter) {
+    const pubClient = redisAdapter;
+    const subClient = redisAdapter.duplicate();
+    io.adapter(createAdapter(pubClient, subClient));
+  }
 
   // Attach io instance to the app so controllers can access it
   app.set('io', io);
