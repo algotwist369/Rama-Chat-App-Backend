@@ -4,7 +4,18 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "start:local": "NODE_ENV=development node src/server.js",
+    "start:prod": "NODE_ENV=production node src/server.js",
+    "config:init": "node scripts/config-manager.js init",
+    "config:init:prod": "node scripts/config-manager.js init production",
+    "config:validate": "node scripts/config-manager.js validate",
+    "config:show": "node scripts/config-manager.js show",
+    "config:update": "node scripts/config-manager.js update",
+    "config:help": "node scripts/config-manager.js help",
+    "env:test": "node scripts/test-environment.js",
+    "env:local": "NODE_ENV=development node scripts/test-environment.js",
+    "env:prod": "NODE_ENV=production node scripts/test-environment.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -16,6 +27,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.5.0",
     "multer": "^1.4.5-lts.1",
+    "redis": "^5.8.2",
     "socket.io": "^4.7.2"
   },
   "devDependencies": {

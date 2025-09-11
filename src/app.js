@@ -12,14 +12,32 @@ const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 
-app.use(helmet());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+    crossOriginEmbedderPolicy: false
+}));
+
+// Body parsing middleware
+const jsonLimit = process.env.JSON_LIMIT || '10mb';
+const urlLimit = process.env.URL_LIMIT || '10mb';
+app.use(express.json({ limit: jsonLimit }));
+app.use(express.urlencoded({ extended: true, limit: urlLimit }));
+
+// CORS configuration
+const corsOrigins = process.env.CORS_ORIGINS 
+    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+    : ['https://rama.ciphra.in', 'http://localhost:5173'];
+
 app.use(cors({
-    origin: ['https://rama.ciphra.in', 'http://localhost:5173'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    origin: corsOrigins,
+    credentials: process.env.CORS_CREDENTIALS === 'true' || true,
+    methods: process.env.CORS_METHODS 
+        ? process.env.CORS_METHODS.split(',').map(method => method.trim())
+        : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: process.env.CORS_HEADERS 
+        ? process.env.CORS_HEADERS.split(',').map(header => header.trim())
+        : ['Content-Type', 'Authorization']
 }));
 
 // Serve static files from uploads directory

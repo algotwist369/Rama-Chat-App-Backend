@@ -66,8 +66,9 @@ const deleteFromLocal = async (filename) => {
 };
 
 const getFileUrl = (filename) => {
-    const baseUrl = process.env.API_URL || 'https://chat.api.d0s369.co.in' || 'http://localhost:5000';
-    return `${baseUrl}/uploads/chat-files/${filename}`;
+    const baseUrl = process.env.API_URL || process.env.FILE_BASE_URL || 'http://localhost:5000';
+    const uploadPath = process.env.UPLOAD_PATH || '/uploads/chat-files';
+    return `${baseUrl}${uploadPath}/${filename}`;
 };
 
 module.exports = { 

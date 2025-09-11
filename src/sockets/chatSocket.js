@@ -8,12 +8,26 @@ const { sendNotification } = require('../services/notificationService');
 require('dotenv').config();
 
 function initSocket(server, redisAdapter, app) {
+  // Socket.io CORS configuration
+  const socketCorsOrigins = process.env.SOCKET_CORS_ORIGINS 
+    ? process.env.SOCKET_CORS_ORIGINS.split(',').map(origin => origin.trim())
+    : ['https://rama.ciphra.in', 'http://localhost:5173'];
+
   const io = new Server(server, { 
     cors: { 
-      origin: ['https://rama.ciphra.in', 'http://localhost:5173'],
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
-    } 
+      origin: socketCorsOrigins,
+      credentials: process.env.SOCKET_CORS_CREDENTIALS === 'true' || true,
+      methods: process.env.SOCKET_CORS_METHODS 
+        ? process.env.SOCKET_CORS_METHODS.split(',').map(method => method.trim())
+        : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+    },
+    transports: process.env.SOCKET_TRANSPORTS 
+      ? process.env.SOCKET_TRANSPORTS.split(',').map(transport => transport.trim())
+      : ['polling', 'websocket'],
+    allowEIO3: process.env.SOCKET_ALLOW_EIO3 === 'true' || true,
+    pingTimeout: parseInt(process.env.SOCKET_PING_TIMEOUT) || 60000,
+    pingInterval: parseInt(process.env.SOCKET_PING_INTERVAL) || 25000,
+    maxHttpBufferSize: parseInt(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE) || 1000000
   });
   if (redisAdapter) io.adapter(redisAdapter);
 
