@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const messageSchema = new mongoose.Schema({
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', required: true },
-    text: String,
+    text: { type: String, maxlength: 1000 },
     file: { 
         url: String, 
         key: String,
