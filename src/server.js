@@ -6,6 +6,7 @@ const connectDB = require('./config/db');
 const initSocket = require('./sockets/chatSocket');
 const { connectRedis, disconnectRedis } = require('./config/redis');
 const envConfig = require('./config/environment');
+const { createIndexes } = require('./config/databaseIndexes');
 
 const server = http.createServer(app);
 
@@ -18,6 +19,9 @@ const server = http.createServer(app);
         
         // Connect to database
         await connectDB();
+        
+        // Create database indexes for optimal performance
+        await createIndexes();
 
         // Connect to Redis
         const redisClient = await connectRedis();

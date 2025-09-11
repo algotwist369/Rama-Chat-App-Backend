@@ -29,30 +29,75 @@ const createGroup = async (req, res) => {
 
 const getGroups = async (req, res) => {
     try {
-        const { page = 1, limit = 10, search = '' } = req.query;
+        const { page = 1, limit = 20, search = '' } = req.query; // Increased limit
         const skip = (page - 1) * limit;
         const userId = req.user._id;
 
         // Base query to only get groups where user is a member
-        const baseQuery = { users: userId };
+        const baseQuery = { 
+            $or: [
+                { users: userId },
+                { managers: userId }
+            ]
+        };
 
         const searchQuery = search
             ? {
                 ...baseQuery,
-                $or: [
-                    { name: { $regex: search, $options: 'i' } },
-                    { region: { $regex: search, $options: 'i' } },
-                ],
+                $and: [
+                    baseQuery,
+                    {
+                        $or: [
+                            { name: { $regex: search, $options: 'i' } },
+                            { region: { $regex: search, $options: 'i' } },
+                        ]
+                    }
+                ]
             }
             : baseQuery;
 
-        const groups = await Group.find(searchQuery)
-            .populate('createdBy', 'username email')
-            .populate('managers', 'username email')
-            .populate('users', 'username email role isOnline lastSeen')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(parseInt(limit));
+        // Use aggregation for better performance with large groups
+        const groups = await Group.aggregate([
+            { $match: searchQuery },
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: parseInt(limit) },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'createdBy',
+                    foreignField: '_id',
+                    as: 'createdBy',
+                    pipeline: [{ $project: { username: 1, email: 1 } }]
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'managers',
+                    foreignField: '_id',
+                    as: 'managers',
+                    pipeline: [{ $project: { username: 1, email: 1, isOnline: 1, lastSeen: 1 } }]
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'users',
+                    foreignField: '_id',
+                    as: 'users',
+                    pipeline: [{ $project: { username: 1, email: 1, role: 1, isOnline: 1, lastSeen: 1 } }]
+                }
+            },
+            {
+                $addFields: {
+                    createdBy: { $arrayElemAt: ['$createdBy', 0] },
+                    memberCount: { $size: '$users' },
+                    managerCount: { $size: '$managers' },
+                    totalMembers: { $add: [{ $size: '$users' }, { $size: '$managers' }] }
+                }
+            }
+        ]);
 
         const total = await Group.countDocuments(searchQuery);
 
@@ -66,6 +111,7 @@ const getGroups = async (req, res) => {
             },
         });
     } catch (error) {
+        console.error('Error fetching groups:', error);
         res.status(500).json({ error: error.message });
     }
 };

@@ -91,28 +91,93 @@ const sendMessage = async (req, res) => {
 const getMessages = async (req, res) => {
     try {
         const { groupId } = req.params;
-        const { page = 1, limit = 50 } = req.query;
+        const { page = 1, limit = 100, before } = req.query; // Increased limit for better performance
         const skip = (page - 1) * limit;
+        const userId = req.user._id;
 
-        // Get user's join date for this group
-        const user = await User.findById(req.user._id);
-        const userJoinedAt = user.groupJoinedAt;
-
-        // Build query - only show messages after user joined the group
-        const query = { groupId };
-        if (userJoinedAt) {
-            query.createdAt = { $gte: userJoinedAt };
+        // Verify user is member of the group
+        const group = await Group.findById(groupId);
+        if (!group) {
+            return res.status(404).json({ error: 'Group not found' });
         }
 
-        const messages = await Message.find(query)
-            .populate('senderId', 'username email role')
-            .populate('deleted.deletedBy', 'username')
-            .sort({ createdAt: 1 }) // Sort oldest first (chronological order)
-            .skip(skip)
-            .limit(parseInt(limit));
+        const isMember = group.users.includes(userId) || group.managers.includes(userId);
+        if (!isMember) {
+            return res.status(403).json({ error: 'Not authorized to view messages' });
+        }
 
-        res.json({ messages });
+        // Get user's join date for this group
+        const user = await User.findById(userId);
+        const userJoinedAt = user.groupJoinedAt;
+
+        // Build optimized query with indexes
+        const query = { 
+            groupId,
+            'deleted.isDeleted': { $ne: true } // Exclude deleted messages
+        };
+        
+        // For new members, only show messages after they joined
+        // This ensures new members don't see previous messages
+        if (userJoinedAt) {
+            query.createdAt = { $gte: userJoinedAt };
+        } else {
+            // If no join date, only show messages from last 7 days
+            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            query.createdAt = { $gte: sevenDaysAgo };
+        }
+        
+        if (before) {
+            query.createdAt = { ...query.createdAt, $lt: new Date(before) };
+        }
+
+        // Use aggregation for better performance with large datasets
+        const messages = await Message.aggregate([
+            { $match: query },
+            { $sort: { createdAt: -1 } }, // Sort newest first for pagination
+            { $skip: skip },
+            { $limit: parseInt(limit) },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'senderId',
+                    foreignField: '_id',
+                    as: 'senderId',
+                    pipeline: [{ $project: { username: 1, email: 1, role: 1 } }]
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'deleted.deletedBy',
+                    foreignField: '_id',
+                    as: 'deletedBy',
+                    pipeline: [{ $project: { username: 1 } }]
+                }
+            },
+            {
+                $addFields: {
+                    senderId: { $arrayElemAt: ['$senderId', 0] },
+                    'deleted.deletedBy': { $arrayElemAt: ['$deletedBy', 0] }
+                }
+            },
+            { $sort: { createdAt: 1 } } // Final sort for chronological order
+        ]);
+
+        // Get total count for pagination info
+        const totalCount = await Message.countDocuments(query);
+
+        res.json({ 
+            messages,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: totalCount,
+                hasMore: skip + messages.length < totalCount,
+                nextCursor: messages.length > 0 ? messages[messages.length - 1].createdAt : null
+            }
+        });
     } catch (error) {
+        console.error('Error fetching messages:', error);
         res.status(500).json({ error: error.message });
     }
 };

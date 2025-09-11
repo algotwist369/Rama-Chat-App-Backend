@@ -314,7 +314,7 @@ function initSocket(server, redisAdapter, app) {
         }
       }
 
-      // Send notifications for new messages
+      // Send notifications for new messages (optimized for large groups)
       const group = await Group.findById(targetGroupId).populate('users managers');
       if (group) {
         const notification = {
@@ -328,19 +328,36 @@ function initSocket(server, redisAdapter, app) {
           createdAt: new Date()
         };
 
-        // Send to all group members except the sender
+        // Optimize notification sending for large groups
         const allMembers = [...(group.users || []), ...(group.managers || [])];
+        const notificationPromises = [];
+        
+        // Batch process notifications for better performance
         for (const member of allMembers) {
           if (member._id.toString() !== socket.userId) {
-            await sendNotification(member._id, notification);
-            // Emit real-time notification to user with better error handling
+            // Add notification to batch
+            notificationPromises.push(
+              sendNotification(member._id, notification).catch(error => {
+                console.error(`Error sending notification to user ${member._id}:`, error);
+              })
+            );
+            
+            // Emit real-time notification to user
             try {
               io.to(`user:${member._id}`).emit('notification:new', notification);
-              console.log(`📢 Notification sent to user: ${member._id}`);
             } catch (error) {
-              console.error('Error sending notification to user:', error);
+              console.error('Error emitting notification to user:', error);
             }
           }
+        }
+        
+        // Process all notifications in parallel
+        if (notificationPromises.length > 0) {
+          Promise.allSettled(notificationPromises).then(results => {
+            const successful = results.filter(r => r.status === 'fulfilled').length;
+            const failed = results.filter(r => r.status === 'rejected').length;
+            console.log(`📢 Notifications sent: ${successful} successful, ${failed} failed`);
+          });
         }
       }
 
@@ -386,6 +403,49 @@ function initSocket(server, redisAdapter, app) {
       });
       
       console.log(`✅ Message sent successfully - Group: ${targetGroupId}, Forwarded to: ${forwardedMessages.length} groups`);
+    });
+
+    // Handle message seen status (optimized for large groups)
+    socket.on('message:seen', async ({ messageId, groupId, messageIds }) => {
+      try {
+        // Handle bulk message seen for better performance
+        if (messageIds && Array.isArray(messageIds)) {
+          const updatePromises = messageIds.map(id => 
+            Message.updateOne(
+              { _id: id, groupId, seenBy: { $ne: socket.userId } },
+              { $addToSet: { seenBy: socket.userId } }
+            )
+          );
+          
+          await Promise.all(updatePromises);
+          
+          // Emit bulk seen status
+          io.to(`group:${groupId}`).emit('messages:seen', {
+            messageIds,
+            userId: socket.userId,
+            timestamp: new Date()
+          });
+        } else if (messageId) {
+          // Handle single message seen
+          const message = await Message.findById(messageId);
+          if (message && message.groupId.toString() === groupId) {
+            if (!message.seenBy.includes(socket.userId)) {
+              message.seenBy.push(socket.userId);
+              await message.save();
+              
+              // Emit seen status to all group members
+              io.to(`group:${groupId}`).emit('message:seen', {
+                messageId,
+                seenBy: message.seenBy,
+                userId: socket.userId,
+                timestamp: new Date()
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error handling message seen:', error);
+      }
     });
 
     // typing indicator - only emit to the specific group
