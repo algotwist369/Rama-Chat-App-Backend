@@ -7,14 +7,24 @@ const createIndexes = async () => {
     try {
         console.log('🔍 Creating database indexes for optimal performance...');
 
-        // Message indexes
+        // Message indexes - optimized for chunking and memory efficiency
         await mongoose.connection.db.collection('messages').createIndexes([
-            { key: { groupId: 1, createdAt: -1 }, name: 'groupId_createdAt_idx' },
-            { key: { senderId: 1, createdAt: -1 }, name: 'senderId_createdAt_idx' },
-            { key: { 'deleted.isDeleted': 1, createdAt: -1 }, name: 'deleted_createdAt_idx' },
+            // Primary index for chunking queries
             { key: { groupId: 1, 'deleted.isDeleted': 1, createdAt: -1 }, name: 'groupId_deleted_createdAt_idx' },
+            // Sparse index for non-deleted messages only
+            { key: { groupId: 1, createdAt: -1 }, name: 'groupId_createdAt_active_idx', partialFilterExpression: { 'deleted.isDeleted': { $ne: true } } },
+            // Sender-based queries
+            { key: { senderId: 1, createdAt: -1 }, name: 'senderId_createdAt_idx' },
+            // Cleanup operations
+            { key: { 'deleted.isDeleted': 1, 'deleted.deletedAt': 1 }, name: 'deleted_cleanup_idx' },
+            { key: { createdAt: 1 }, name: 'createdAt_cleanup_idx' },
+            // File and media queries
+            { key: { file: 1, createdAt: -1 }, name: 'file_createdAt_idx' },
+            // Forwarding and tags
             { key: { forwardedFrom: 1 }, name: 'forwardedFrom_idx' },
-            { key: { tags: 1 }, name: 'tags_idx' }
+            { key: { tags: 1 }, name: 'tags_idx' },
+            // Compound index for user join date filtering
+            { key: { groupId: 1, createdAt: 1 }, name: 'groupId_createdAt_asc_idx' }
         ]);
 
         // Group indexes

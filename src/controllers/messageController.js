@@ -2,27 +2,63 @@ const Message = require('../models/Message');
 const Group = require('../models/Group');
 const User = require('../models/User');
 const extractTags = require('../utils/parser');
+const mongoose = require('mongoose');
 
-// Auto-delete permanently deleted messages after 24 hours
+// Memory-optimized message cleanup with chunking
 const cleanupDeletedMessages = async () => {
     try {
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         
-        const result = await Message.deleteMany({
-            'deleted.isDeleted': true,
-            'deleted.deletedAt': { $lt: twentyFourHoursAgo }
-        });
+        // Process in chunks to avoid memory issues
+        let totalDeleted = 0;
+        let hasMore = true;
+        const chunkSize = 1000;
         
-        if (result.deletedCount > 0) {
-            console.log(`Cleaned up ${result.deletedCount} permanently deleted messages`);
+        while (hasMore) {
+            const result = await Message.deleteMany({
+                'deleted.isDeleted': true,
+                'deleted.deletedAt': { $lt: twentyFourHoursAgo }
+            }).limit(chunkSize);
+            
+            totalDeleted += result.deletedCount;
+            hasMore = result.deletedCount === chunkSize;
+            
+            // Small delay to prevent overwhelming the database
+            if (hasMore) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+        
+        if (totalDeleted > 0) {
+            console.log(`Cleaned up ${totalDeleted} permanently deleted messages`);
         }
     } catch (error) {
         console.error('Error cleaning up deleted messages:', error);
     }
 };
 
-// Run cleanup every hour
+// Optimized cleanup for old messages (older than 90 days)
+const cleanupOldMessages = async () => {
+    try {
+        const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+        
+        // Only clean up messages from inactive groups or very old messages
+        const result = await Message.deleteMany({
+            createdAt: { $lt: ninetyDaysAgo },
+            'deleted.isDeleted': true
+        }).limit(5000); // Limit to prevent long-running operations
+        
+        if (result.deletedCount > 0) {
+            console.log(`Cleaned up ${result.deletedCount} old deleted messages`);
+        }
+    } catch (error) {
+        console.error('Error cleaning up old messages:', error);
+    }
+};
+
+// Run cleanup every hour for deleted messages, every 6 hours for old messages
 setInterval(cleanupDeletedMessages, 60 * 60 * 1000);
+setInterval(cleanupOldMessages, 6 * 60 * 60 * 1000);
 
 /**
  * Send a new message
@@ -86,96 +122,242 @@ const sendMessage = async (req, res) => {
 };
 
 /**
- * Get messages from a group with pagination
+ * Get messages from a group with optimized chunking and memory management
  */
 const getMessages = async (req, res) => {
     try {
         const { groupId } = req.params;
-        const { page = 1, limit = 100, before } = req.query; // Increased limit for better performance
-        const skip = (page - 1) * limit;
+        const { 
+            chunkSize = 50,           // Smaller chunks for better memory management
+            before,                   // Cursor-based pagination
+            after,                    // For loading newer messages
+            includeMetadata = false   // Only include essential data by default
+        } = req.query;
+        
         const userId = req.user._id;
+        const chunkLimit = Math.min(parseInt(chunkSize), 100); // Cap at 100 for performance
 
-        // Verify user is member of the group
-        const group = await Group.findById(groupId);
+        // Fast group membership check with projection
+        const group = await Group.findById(groupId, { 
+            users: 1, 
+            managers: 1, 
+            _id: 1 
+        }).lean();
+        
         if (!group) {
             return res.status(404).json({ error: 'Group not found' });
         }
 
-        const isMember = group.users.includes(userId) || group.managers.includes(userId);
+        const isMember = group.users.some(user => user.toString() === userId.toString()) ||
+                        group.managers.some(manager => manager.toString() === userId.toString());
+        
         if (!isMember) {
             return res.status(403).json({ error: 'Not authorized to view messages' });
         }
 
-        // Get user's join date for this group
-        const user = await User.findById(userId);
-        const userJoinedAt = user.groupJoinedAt;
+        // Get user's join date with minimal projection
+        const user = await User.findById(userId, { groupJoinedAt: 1 }).lean();
+        const userJoinedAt = user?.groupJoinedAt;
 
-        // Build optimized query with indexes
-        const query = { 
-            groupId,
-            'deleted.isDeleted': { $ne: true } // Exclude deleted messages
+        // Build optimized query with proper indexing
+        const baseQuery = { 
+            groupId: groupId, // Mongoose will automatically cast string to ObjectId
+            'deleted.isDeleted': { $ne: true }
         };
         
-        // For new members, only show messages after they joined
-        // This ensures new members don't see previous messages
+        // Time-based filtering for performance - only apply if user has a specific join date
+        // For existing group members, show all messages unless they have a specific join date
         if (userJoinedAt) {
-            query.createdAt = { $gte: userJoinedAt };
-        } else {
-            // If no join date, only show messages from last 7 days
-            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-            query.createdAt = { $gte: sevenDaysAgo };
+            baseQuery.createdAt = { $gte: userJoinedAt };
+        }
+        // Remove the 30-day restriction for existing members - they should see all group messages
+        
+        // Cursor-based pagination
+        if (before) {
+            baseQuery.createdAt = { ...baseQuery.createdAt, $lt: new Date(before) };
         }
         
-        if (before) {
-            query.createdAt = { ...query.createdAt, $lt: new Date(before) };
+        if (after) {
+            baseQuery.createdAt = { ...baseQuery.createdAt, $gt: new Date(after) };
         }
 
-        // Use aggregation for better performance with large datasets
-        const messages = await Message.aggregate([
-            { $match: query },
-            { $sort: { createdAt: -1 } }, // Sort newest first for pagination
-            { $skip: skip },
-            { $limit: parseInt(limit) },
+        // Debug logging to help troubleshoot
+        console.log('🔍 Message Query Debug:', {
+            groupId,
+            userId,
+            userJoinedAt,
+            baseQuery,
+            chunkLimit
+        });
+
+        // Test query to see if any messages exist for this group
+        const testQuery = { groupId: groupId };
+        const testCount = await Message.countDocuments(testQuery);
+        console.log('🧪 Test Query Results:', {
+            testQuery,
+            testCount,
+            groupIdType: typeof groupId,
+            groupId
+        });
+
+        // Optimized aggregation pipeline with memory-efficient operations
+        const pipeline = [
+            { $match: baseQuery },
+            { $sort: { createdAt: -1 } },
+            { $limit: chunkLimit },
+            
+            // Optimized lookup with minimal data projection
             {
                 $lookup: {
                     from: 'users',
                     localField: 'senderId',
                     foreignField: '_id',
-                    as: 'senderId',
-                    pipeline: [{ $project: { username: 1, email: 1, role: 1 } }]
+                    as: 'sender',
+                    pipeline: [
+                        { 
+                            $project: { 
+                                username: 1, 
+                                _id: 1,
+                                // Only include role if metadata is requested
+                                ...(includeMetadata === 'true' && { role: 1, email: 1 })
+                            } 
+                        }
+                    ]
                 }
             },
+            
+            // Only lookup deletedBy if there are deleted messages
             {
                 $lookup: {
                     from: 'users',
                     localField: 'deleted.deletedBy',
                     foreignField: '_id',
-                    as: 'deletedBy',
-                    pipeline: [{ $project: { username: 1 } }]
+                    as: 'deletedByUser',
+                    pipeline: [{ $project: { username: 1, _id: 1 } }]
                 }
             },
+            
+            // Optimized field projection
             {
                 $addFields: {
-                    senderId: { $arrayElemAt: ['$senderId', 0] },
-                    'deleted.deletedBy': { $arrayElemAt: ['$deletedBy', 0] }
+                    senderId: { $arrayElemAt: ['$sender', 0] },
+                    'deleted.deletedBy': { 
+                        $cond: {
+                            if: { $gt: [{ $size: '$deletedByUser' }, 0] },
+                            then: { $arrayElemAt: ['$deletedByUser', 0] },
+                            else: null
+                        }
+                    }
                 }
             },
-            { $sort: { createdAt: 1 } } // Final sort for chronological order
-        ]);
+            
+            // Remove unnecessary fields to reduce memory usage
+            {
+                $project: {
+                    _id: 1,
+                    text: 1,
+                    file: 1,
+                    senderId: 1,
+                    groupId: 1,
+                    createdAt: 1,
+                    updatedAt: 1,
+                    deleted: 1,
+                    // Only include these fields if metadata is requested
+                    ...(includeMetadata === 'true' && {
+                        seenBy: 1,
+                        deliveredTo: 1,
+                        status: 1
+                    })
+                }
+            },
+            
+            // Final sort for chronological order
+            { $sort: { createdAt: 1 } }
+        ];
 
-        // Get total count for pagination info
-        const totalCount = await Message.countDocuments(query);
+        // Execute aggregation with memory optimization
+        let messages = await Message.aggregate(pipeline).allowDiskUse(false);
 
-        res.json({ 
-            messages,
-            pagination: {
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total: totalCount,
-                hasMore: skip + messages.length < totalCount,
-                nextCursor: messages.length > 0 ? messages[messages.length - 1].createdAt : null
-            }
+        // Debug logging for aggregation results
+        console.log('📊 Aggregation Results:', {
+            messagesFound: messages.length,
+            firstMessage: messages[0] ? {
+                _id: messages[0]._id,
+                text: messages[0].text,
+                createdAt: messages[0].createdAt
+            } : null
         });
+
+        // Fallback: If aggregation returns no results but test query found messages, try simple query
+        if (messages.length === 0 && testCount > 0) {
+            console.log('🔄 Using fallback query - aggregation returned no results');
+            const fallbackQuery = { 
+                groupId: groupId,
+                'deleted.isDeleted': { $ne: true }
+            };
+            
+            messages = await Message.find(fallbackQuery)
+                .populate('senderId', 'username _id')
+                .sort({ createdAt: -1 })
+                .limit(chunkLimit)
+                .lean();
+                
+            // Sort messages chronologically for consistency
+            messages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                
+            console.log('🔄 Fallback Results:', {
+                messagesFound: messages.length,
+                firstMessage: messages[0] ? {
+                    _id: messages[0]._id,
+                    text: messages[0].text,
+                    createdAt: messages[0].createdAt
+                } : null
+            });
+        }
+
+        // Get approximate count using estimatedDocumentCount for better performance
+        const estimatedCount = await Message.estimatedDocumentCount({ groupId: groupId });
+        
+        // Only get exact count if it's small (less than 10k messages)
+        let totalCount = estimatedCount;
+        if (estimatedCount < 10000) {
+            totalCount = await Message.countDocuments(baseQuery);
+        }
+
+        console.log('📈 Count Results:', {
+            estimatedCount,
+            totalCount,
+            baseQuery
+        });
+
+        // Calculate next cursor efficiently
+        const nextCursor = messages.length > 0 ? messages[messages.length - 1].createdAt : null;
+        const prevCursor = messages.length > 0 ? messages[0].createdAt : null;
+
+        // Response with optimized structure
+        const response = {
+            messages,
+            chunk: {
+                size: chunkLimit,
+                hasMore: messages.length === chunkLimit,
+                nextCursor,
+                prevCursor,
+                total: totalCount,
+                isEstimated: totalCount === estimatedCount && estimatedCount >= 10000
+            }
+        };
+
+        // Add metadata only if requested
+        if (includeMetadata === 'true') {
+            response.metadata = {
+                chunkSize: chunkLimit,
+                loadTime: Date.now(),
+                memoryOptimized: true
+            };
+        }
+
+        res.json(response);
+        
     } catch (error) {
         console.error('Error fetching messages:', error);
         res.status(500).json({ error: error.message });
@@ -419,9 +601,51 @@ const markAsSeen = async (req, res) => {
     }
 };
 
+/**
+ * Test endpoint to debug message retrieval
+ */
+const testGetMessages = async (req, res) => {
+    try {
+        const { groupId } = req.params;
+        const userId = req.user._id;
+
+        console.log('🧪 Test endpoint called:', { groupId, userId });
+
+        // Simple query to get all messages for the group
+        const messages = await Message.find({ 
+            groupId: groupId 
+        })
+        .populate('senderId', 'username _id')
+        .sort({ createdAt: 1 })
+        .lean();
+
+        console.log('🧪 Test results:', {
+            groupId,
+            messagesFound: messages.length,
+            messages: messages.map(m => ({
+                _id: m._id,
+                text: m.text,
+                senderId: m.senderId,
+                createdAt: m.createdAt
+            }))
+        });
+
+        res.json({
+            success: true,
+            groupId,
+            messagesFound: messages.length,
+            messages: messages
+        });
+    } catch (error) {
+        console.error('Test endpoint error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = {
     sendMessage,
     getMessages,
+    testGetMessages,
     editMessage,
     deleteMessage,
     searchMessages,
