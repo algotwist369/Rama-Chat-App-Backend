@@ -33,7 +33,17 @@ function initSocket(server, redisAdapter, app) {
   if (redisAdapter) {
     const pubClient = redisAdapter;
     const subClient = redisAdapter.duplicate();
-    io.adapter(createAdapter(pubClient, subClient));
+    
+    // Configure Redis adapter with better error handling and performance
+    const adapter = createAdapter(pubClient, subClient, {
+      key: 'socket.io',
+      requestsTimeout: 5000,
+      heartbeatInterval: 1000,
+      heartbeatTimeout: 5000
+    });
+    
+    io.adapter(adapter);
+    console.log('🔴 Redis adapter configured for Socket.io with enhanced settings');
   }
 
   // Attach io instance to the app so controllers can access it
@@ -68,9 +78,23 @@ function initSocket(server, redisAdapter, app) {
   });
 
   io.on('connection', async (socket) => {
+    console.log(`🔌 User connected: ${socket.id}`);
+    
+    // Add connection error handling
+    socket.on('error', (error) => {
+      console.error(`❌ Socket error for user ${socket.id}:`, error);
+    });
+    
+    socket.on('disconnect', (reason) => {
+      console.log(`🔌 User disconnected: ${socket.id}, reason: ${reason}`);
+    });
+    
     // join user into a personal room and group room
     const user = await User.findById(socket.userId);
-    if (!user) return socket.disconnect();
+    if (!user) {
+      console.log(`❌ User not found for socket ${socket.id}, disconnecting`);
+      return socket.disconnect();
+    }
 
     // Update user online status
     await User.findByIdAndUpdate(socket.userId, {
@@ -248,8 +272,13 @@ function initSocket(server, redisAdapter, app) {
         .populate('groupId', 'name region')
         .lean();
 
-      // Emit to the target group
-      io.to(`group:${targetGroupId}`).emit('message:new', populatedMsg);
+      // Emit to the target group with better error handling
+      try {
+        io.to(`group:${targetGroupId}`).emit('message:new', populatedMsg);
+        console.log(`📤 Message broadcasted to group: ${targetGroupId}, messageId: ${msg._id}`);
+      } catch (error) {
+        console.error('Error broadcasting message to group:', error);
+      }
 
       // Create separate message records for each forwarded group to ensure persistence
       const forwardedMessages = [];
@@ -272,12 +301,17 @@ function initSocket(server, redisAdapter, app) {
 
         forwardedMessages.push(populatedForwardedMsg);
 
-        // Emit to the forwarded group
-        io.to(`group:${group._id}`).emit('message:new', {
-          ...populatedForwardedMsg,
-          isForwarded: true,
-          originalGroup: { _id: targetGroupId, name: populatedMsg.groupId.name }
-        });
+        // Emit to the forwarded group with better error handling
+        try {
+          io.to(`group:${group._id}`).emit('message:new', {
+            ...populatedForwardedMsg,
+            isForwarded: true,
+            originalGroup: { _id: targetGroupId, name: populatedMsg.groupId.name }
+          });
+          console.log(`📤 Forwarded message broadcasted to group: ${group._id}, messageId: ${forwardedMsg._id}`);
+        } catch (error) {
+          console.error('Error broadcasting forwarded message to group:', error);
+        }
       }
 
       // Send notifications for new messages
@@ -299,8 +333,13 @@ function initSocket(server, redisAdapter, app) {
         for (const member of allMembers) {
           if (member._id.toString() !== socket.userId) {
             await sendNotification(member._id, notification);
-            // Emit real-time notification to user
-            io.to(`user:${member._id}`).emit('notification:new', notification);
+            // Emit real-time notification to user with better error handling
+            try {
+              io.to(`user:${member._id}`).emit('notification:new', notification);
+              console.log(`📢 Notification sent to user: ${member._id}`);
+            } catch (error) {
+              console.error('Error sending notification to user:', error);
+            }
           }
         }
       }
@@ -325,14 +364,28 @@ function initSocket(server, redisAdapter, app) {
           for (const member of allForwardedMembers) {
             if (member._id.toString() !== socket.userId) {
               await sendNotification(member._id, forwardedNotification);
-              // Emit real-time notification to user
-              io.to(`user:${member._id}`).emit('notification:new', forwardedNotification);
+              // Emit real-time notification to user with better error handling
+              try {
+                io.to(`user:${member._id}`).emit('notification:new', forwardedNotification);
+                console.log(`📢 Forwarded notification sent to user: ${member._id}`);
+              } catch (error) {
+                console.error('Error sending forwarded notification to user:', error);
+              }
             }
           }
         }
       }
 
-      ack?.({ ok: true, id: msg._id });
+      // Send acknowledgment back to sender with enhanced data
+      ack?.({
+        ok: true,
+        id: msg._id,
+        message: populatedMsg,
+        forwardedTo: forwardedMessages.length,
+        timestamp: new Date().toISOString()
+      });
+      
+      console.log(`✅ Message sent successfully - Group: ${targetGroupId}, Forwarded to: ${forwardedMessages.length} groups`);
     });
 
     // typing indicator - only emit to the specific group
