@@ -15,9 +15,9 @@ const cleanupDeletedMessages = async () => {
         const chunkSize = 1000;
         
         while (hasMore) {
-            const result = await Message.deleteMany({
-                'deleted.isDeleted': true,
-                'deleted.deletedAt': { $lt: twentyFourHoursAgo }
+        const result = await Message.deleteMany({
+            'deleted.isDeleted': true,
+            'deleted.deletedAt': { $lt: twentyFourHoursAgo }
             }).limit(chunkSize);
             
             totalDeleted += result.deletedCount;
